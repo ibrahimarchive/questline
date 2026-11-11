@@ -14,7 +14,6 @@ contextBridge.exposeInMainWorld('questline', {
   getAppInfo: () => invoke('app:info'),
   loadGames: () => invoke('games:load'),
   refreshGames: () => invoke('games:refresh'),
-  inspectGame: (payload) => invoke('runner:inspect', payload),
   inspectGames: (payload) => invoke('runner:inspect-many', payload),
   installGame: (payload) => invoke('runner:install', payload),
   launchGame: (payload) => invoke('runner:launch', payload),
@@ -25,7 +24,6 @@ contextBridge.exposeInMainWorld('questline', {
   revealPath: (target) => invoke('shell:reveal-path', target),
   pickFolder: () => invoke('shell:pick-folder'),
   getDiscordStatus: () => invoke('discord:status'),
-  rpcStatus: () => invoke('rpc:status'),
   rpcConnect: (payload) => invoke('rpc:connect', payload),
   rpcDisconnect: () => invoke('rpc:disconnect'),
   onRunnerEvent: (callback) => {

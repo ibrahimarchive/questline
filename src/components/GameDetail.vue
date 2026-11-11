@@ -5,6 +5,7 @@ import Icon from './Icon.vue'
 import {
   connectRpc,
   disconnectRpc,
+  elapsedFor,
   executableStatus,
   gameInstalled,
   gameSession,
@@ -18,13 +19,12 @@ import {
 } from '@/store'
 import type { GameExecutable } from '@/types'
 import {
+  availableExecutables,
   canonicalExecutableName,
   classNames,
   currentPlatform,
   elapsedFormat,
   formatDuration,
-  isExecutableForCurrentPlatform,
-  isUsableExecutable,
   normalizePlatform,
   preferredExecutable,
   sessionKeyFor,
@@ -34,24 +34,43 @@ import {
 const game = selectedGame
 const wantsRpc = ref(false)
 
-const usableExecutables = computed(() =>
-  (game.value?.executables || []).filter(
-    (executable) => isUsableExecutable(executable) && isExecutableForCurrentPlatform(executable),
-  ),
-)
+const usableExecutables = computed(() => (game.value ? availableExecutables(game.value) : []))
 
 const platform = currentPlatform()
 
 const preferred = computed(() => (game.value ? preferredExecutable(game.value) : null))
+const platformLabel = computed(() => normalizePlatform(preferred.value?.os || platform))
+const platformName = normalizePlatform(platform)
 
-const runningExecutable = computed(() => {
-  if (!game.value) return null
-  return (
-    usableExecutables.value.find(
-      (executable) => executableStatus(game.value!.id, executable)?.running,
-    ) || null
-  )
+const executableRows = computed(() => {
+  const current = game.value
+  if (!current) return []
+  return usableExecutables.value.map((executable) => {
+    const status = executableStatus(current.id, executable)
+    const busy = state.busyKey === sessionKeyFor(current.id, executable.name)
+    const running = Boolean(status?.running)
+    const installedExe = Boolean(status?.installed)
+    const { folders, filename } = splitExecutable(executable.name)
+    return {
+      executable,
+      folders,
+      filename,
+      osBadge: executable.os.replace('win32', 'WIN'),
+      running,
+      busy,
+      isLauncher: executable.is_launcher,
+      stateClass: running ? 'running' : installedExe ? 'installed' : 'missing',
+      stateLabel: running ? 'Running' : installedExe ? 'Ready' : 'Not created',
+      actionClass: running ? 'stop' : 'play',
+      actionIcon: busy ? 'refresh' : running ? 'stop' : 'play',
+      actionLabel: busy ? 'Working...' : running ? 'Stop' : 'Play',
+    }
+  })
 })
+
+const runningExecutable = computed(
+  () => executableRows.value.find((row) => row.running)?.executable || null,
+)
 
 const runningSession = computed(() =>
   game.value ? gameSession(game.value.id) : null,
@@ -97,9 +116,7 @@ const primaryLabel = computed(() => {
 
 const questHint = computed(() => {
   if (isRunning.value) {
-    const elapsed = runningSession.value
-      ? formatDuration(Math.max(0, state.now - new Date(runningSession.value.startedAt).getTime()))
-      : null
+    const elapsed = runningSession.value ? formatDuration(elapsedFor(runningSession.value)) : null
     return elapsed
       ? `Session live for ${elapsed}. Keep Discord open until the quest is credited.`
       : 'Session is live. Keep Discord open until the quest is credited.'
@@ -112,18 +129,6 @@ const pathLabel = computed(() => {
   if (!game.value) return ''
   return `${state.settings.gamesDirectory.replace(/[\\/]+$/, '')}/${game.value.id}`
 })
-
-function isTheBusyExe(executable: GameExecutable) {
-  if (!game.value) return false
-  return state.busyKey === sessionKeyFor(game.value.id, executable.name)
-}
-
-function executableActionLabel(executable: GameExecutable) {
-  const status = game.value ? executableStatus(game.value.id, executable) : null
-  if (status?.running) return 'Stop'
-  if (isTheBusyExe(executable)) return 'Working...'
-  return 'Play'
-}
 
 async function togglePrimary() {
   if (!game.value) return
@@ -272,7 +277,7 @@ watch(game, () => {
         <div class="quick-meta">
           <span class="pill">
             <Icon name="gamepad" :size="12" />
-            {{ normalizePlatform(preferred?.os || platform) }}
+            {{ platformLabel }}
           </span>
           <span class="pill">
             <Icon name="folder" :size="12" />
@@ -286,71 +291,47 @@ watch(game, () => {
 
         <div class="section-head">
           <span>Launch target</span>
-          <span class="section-note">{{ usableExecutables.length }} available</span>
+          <span class="section-note">{{ executableRows.length }} available</span>
         </div>
 
         <div class="executable-list scroll-area">
           <div
-            v-for="executable in usableExecutables"
-            :key="executable.name"
+            v-for="row in executableRows"
+            :key="row.executable.name"
             class="executable-row"
-            :class="{
-              'is-running': executableStatus(game.id, executable)?.running,
-            }"
+            :class="{ 'is-running': row.running }"
           >
-            <span :class="classNames('os-badge', executable.os)">{{ executable.os.replace('win32', 'WIN') }}</span>
+            <span :class="classNames('os-badge', row.executable.os)">{{ row.osBadge }}</span>
             <div class="exe-copy">
-              <div class="exe-path" :title="executable.name">
-                <template v-for="(folder, index) in splitExecutable(executable.name).folders" :key="`${folder}-${index}`">
+              <div class="exe-path" :title="row.executable.name">
+                <template v-for="(folder, index) in row.folders" :key="`${folder}-${index}`">
                   <span class="path-folder">{{ folder }}</span>
                   <span class="path-sep">›</span>
                 </template>
-                <span class="path-file">{{ splitExecutable(executable.name).filename }}</span>
+                <span class="path-file">{{ row.filename }}</span>
               </div>
               <div class="exe-meta">
-                <span
-                  :class="classNames(
-                    'exe-state',
-                    executableStatus(game.id, executable)?.running
-                      ? 'running'
-                      : executableStatus(game.id, executable)?.installed
-                        ? 'installed'
-                        : 'missing',
-                  )"
-                >
+                <span :class="classNames('exe-state', row.stateClass)">
                   <span class="status-dot"></span>
-                  {{
-                    executableStatus(game.id, executable)?.running
-                      ? 'Running'
-                      : executableStatus(game.id, executable)?.installed
-                        ? 'Ready'
-                        : 'Not created'
-                  }}
+                  {{ row.stateLabel }}
                 </span>
-                <span v-if="executable.is_launcher" class="exe-tag">launcher</span>
+                <span v-if="row.isLauncher" class="exe-tag">launcher</span>
               </div>
             </div>
             <button
-              :class="classNames(
-                'exe-action',
-                executableStatus(game.id, executable)?.running ? 'stop' : 'play',
-              )"
+              :class="classNames('exe-action', row.actionClass)"
               type="button"
-              :disabled="isTheBusyExe(executable)"
-              @click="toggleExecutable(executable)"
+              :disabled="row.busy"
+              @click="toggleExecutable(row.executable)"
             >
-              <Icon
-                :name="isTheBusyExe(executable) ? 'refresh' : executableStatus(game.id, executable)?.running ? 'stop' : 'play'"
-                :size="12"
-                :class="{ spin: isTheBusyExe(executable) }"
-              />
-              {{ executableActionLabel(executable) }}
+              <Icon :name="row.actionIcon" :size="12" :class="{ spin: row.busy }" />
+              {{ row.actionLabel }}
             </button>
           </div>
 
-          <div v-if="!usableExecutables.length" class="no-executables">
+          <div v-if="!executableRows.length" class="no-executables">
             <Icon name="alert" :size="16" />
-            Discord has not registered a launchable executable for this game on {{ normalizePlatform(platform) }}.
+            Discord has not registered a launchable executable for this game on {{ platformName }}.
           </div>
         </div>
 

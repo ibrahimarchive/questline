@@ -14,11 +14,10 @@ import type {
   Session,
   Settings,
   StoredState,
-  Theme,
   Toast,
 } from './types'
 import {
-  currentPlatform,
+  availableExecutables,
   executableLabel,
   formatNumber,
   isExecutableForCurrentPlatform,
@@ -41,7 +40,7 @@ const SUGGESTION_IDS = [
 ]
 
 const MAX_LOGS = 300
-const MAX_RESULTS = 24
+export const SEARCH_RESULT_LIMIT = 24
 
 interface SearchEntry {
   game: Game
@@ -59,7 +58,6 @@ interface AppState {
   games: Game[]
   source: string
   updatedAt: string | null
-  cached: boolean
   library: string[]
   selectedId: string | null
   inspect: InspectMap
@@ -99,7 +97,6 @@ export const state = reactive<AppState>({
   games: [],
   source: '',
   updatedAt: null,
-  cached: false,
   library: [],
   selectedId: null,
   inspect: {},
@@ -129,7 +126,7 @@ let searchTimer: ReturnType<typeof setTimeout> | null = null
 let pendingSearchGeneration = 0
 let searchGeneration = 0
 let persistTimer: ReturnType<typeof setTimeout> | null = null
-let saveChain: Promise<unknown> = Promise.resolve()
+let saveChain: Promise<void> = Promise.resolve()
 let initialized = false
 let themeListenerAttached = false
 let clockStarted = false
@@ -156,37 +153,7 @@ export const suggestedGames = computed(() => {
   return result.slice(0, 6)
 })
 
-export const runningByGame = computed(() => {
-  const map = new Map<string, Session[]>()
-  for (const session of state.sessions) {
-    const rows = map.get(session.gameId) || []
-    rows.push(session)
-    map.set(session.gameId, rows)
-  }
-  return map
-})
-
 export const runningCount = computed(() => state.sessions.length)
-
-export const installedCount = computed(() => {
-  let count = 0
-  for (const game of libraryGames.value) {
-    const rows = state.inspect[game.id]
-    if (!rows) continue
-    if (Object.values(rows).some((entry) => entry.installed)) count++
-  }
-  return count
-})
-
-export const gamesCount = computed(() => state.games.length)
-
-export const selectedRunning = computed(() => {
-  const game = selectedGame.value
-  if (!game) return false
-  return gameIsRunning(game.id)
-})
-
-export const now = computed(() => state.now)
 
 export function gameIsRunning(gameId: string): boolean {
   if (state.sessions.some((session) => session.gameId === gameId)) return true
@@ -224,7 +191,7 @@ export function setPage(page: Page) {
   state.page = page
 }
 
-export function applyTheme() {
+function applyTheme() {
   const theme = state.settings.theme
   const resolved =
     theme === 'system'
@@ -369,7 +336,7 @@ function runSearch(rawQuery: string, generation: number) {
   })
 
   if (generation === searchGeneration) {
-    state.results = scored.slice(0, MAX_RESULTS).map((row) => row.game)
+    state.results = scored.slice(0, SEARCH_RESULT_LIMIT).map((row) => row.game)
     state.searchBusy = false
   }
 }
@@ -386,7 +353,6 @@ function resetGameData(data: GameData) {
   state.games = data.games
   state.source = data.source
   state.updatedAt = data.updatedAt
-  state.cached = data.cached
   gameIndex.value = new Map(data.games.map((game) => [game.id, game]))
   buildSearchIndex(data.games)
   if (state.selectedId && !gameIndex.value.has(state.selectedId)) {
@@ -522,7 +488,7 @@ async function handleRunnerEvent(event: RunnerEvent) {
   }
 }
 
-export async function refreshSessions(silent = false) {
+async function refreshSessions(silent = false) {
   lastSessionPoll = Date.now()
   try {
     const sessions = await window.questline.listRunning()
@@ -537,12 +503,10 @@ export async function refreshSessions(silent = false) {
   }
 }
 
-export async function inspectLibrary() {
-  const games = libraryGames.value.filter((game) =>
-    game.executables.some(
-      (executable) => isUsableExecutable(executable) && isExecutableForCurrentPlatform(executable),
-    ),
-  )
+async function inspectLibrary() {
+  const games = libraryGames.value
+    .map((game) => ({ game, executables: availableExecutables(game) }))
+    .filter((entry) => entry.executables.length > 0)
   if (!games.length) {
     state.inspect = {}
     state.inspecting = false
@@ -553,13 +517,7 @@ export async function inspectLibrary() {
   state.inspecting = true
   try {
     const result = await window.questline.inspectGames({
-      games: games.map((game) => ({
-        gameId: game.id,
-        executables: game.executables.filter(
-          (executable) =>
-            isUsableExecutable(executable) && isExecutableForCurrentPlatform(executable),
-        ),
-      })),
+      games: games.map(({ game, executables }) => ({ gameId: game.id, executables })),
     })
     if (generation !== inspectGeneration) return
     state.inspect = { ...state.inspect, ...result }
@@ -605,11 +563,7 @@ export function selectGame(gameId: string) {
   state.selectedId = gameId
 }
 
-export function toggleSelected(game: Game) {
-  state.selectedId = state.selectedId === game.id ? null : game.id
-}
-
-export function addLog(type: LogType, message: string, gameId?: string) {
+function addLog(type: LogType, message: string, gameId?: string) {
   state.logs.unshift({
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     type,
@@ -649,7 +603,7 @@ function schedulePersist() {
   }, 500)
 }
 
-export function persistNow(): Promise<unknown> {
+function persistNow(): Promise<void> {
   if (persistTimer) {
     clearTimeout(persistTimer)
     persistTimer = null
@@ -664,6 +618,7 @@ export function persistNow(): Promise<unknown> {
   saveChain = saveChain
     .catch(() => undefined)
     .then(() => window.questline.saveState(snapshot))
+    .then(() => undefined)
     .catch((error) => {
       console.error('Could not save state:', error)
     })
@@ -726,73 +681,70 @@ export async function startGame(game: Game, executable?: GameExecutable) {
   }
 }
 
-export async function stopGame(game: Game, executable?: GameExecutable) {
-  const target = executable || preferredExecutable(game)
-  if (!target) return
-  const key = sessionKeyFor(game.id, target.name)
-  state.busyKey = key
+interface StopTarget {
+  gameId: string
+  executableName: string
+  key: string
+  name: string
+}
+
+async function stopTarget(target: StopTarget, kind: 'game' | 'session') {
+  state.busyKey = target.key
   try {
     const result = await window.questline.stopGame({
-      gameId: game.id,
-      executableName: target.name,
+      gameId: target.gameId,
+      executableName: target.executableName,
     })
     if (result.stopped > 0) {
-      state.sessions = state.sessions.filter((session) => session.key !== key)
-      addLog('info', `Stopped ${game.name}.`, game.id)
-      pushToast('success', 'Session stopped', `${game.name} is no longer visible to Discord.`)
+      state.sessions = state.sessions.filter((session) => session.key !== target.key)
+      addLog('info', `Stopped ${target.name}.`, target.gameId)
+      pushToast('success', 'Session stopped', `${target.name} is no longer visible to Discord.`)
     } else {
       await refreshSessions(true)
-      const stillRunning = state.sessions.some((session) => session.key === key)
+      const stillRunning = state.sessions.some((session) => session.key === target.key)
       if (stillRunning) {
-        addLog('warning', `${game.name} is still running.`, game.id)
-        pushToast('warning', 'Could not stop game', `${game.name} is still running.`)
+        addLog('warning', `${target.name} is still running.`, target.gameId)
+        pushToast('warning', `Could not stop ${kind}`, `${target.name} is still running.`)
       } else {
-        addLog('info', `${game.name} was not running.`, game.id)
-        pushToast('info', 'Nothing to stop', `${game.name} was not running.`)
+        addLog('info', `${target.name} was not running.`, target.gameId)
+        pushToast('info', 'Nothing to stop', `${target.name} was not running.`)
       }
     }
     await inspectLibrary()
   } catch (error) {
     const message = error instanceof Error ? error.message : 'The session could not be stopped.'
-    addLog('error', message, game.id)
-    pushToast('error', 'Could not stop game', message)
+    addLog('error', message, target.gameId)
+    pushToast('error', `Could not stop ${kind}`, message)
   } finally {
     state.busyKey = ''
   }
 }
 
+export async function stopGame(game: Game, executable?: GameExecutable) {
+  const executableTarget = executable || preferredExecutable(game)
+  if (!executableTarget) return
+  await stopTarget(
+    {
+      gameId: game.id,
+      executableName: executableTarget.name,
+      key: sessionKeyFor(game.id, executableTarget.name),
+      name: game.name,
+    },
+    'game',
+  )
+}
+
 export async function stopSession(session: Session) {
   const game = gameIndex.value.get(session.gameId)
-  const name = game?.name || session.gameName || 'Game'
-  state.busyKey = session.key
-  try {
-    const result = await window.questline.stopGame({
+  await stopTarget(
+    {
       gameId: session.gameId,
       executableName: session.executableName,
-    })
-    if (result.stopped > 0) {
-      state.sessions = state.sessions.filter((row) => row.key !== session.key)
-      addLog('info', `Stopped ${name}.`, session.gameId)
-      pushToast('success', 'Session stopped', `${name} is no longer visible to Discord.`)
-    } else {
-      await refreshSessions(true)
-      const stillRunning = state.sessions.some((row) => row.key === session.key)
-      if (stillRunning) {
-        addLog('warning', `${name} is still running.`, session.gameId)
-        pushToast('warning', 'Could not stop session', `${name} is still running.`)
-      } else {
-        addLog('info', `${name} was not running.`, session.gameId)
-        pushToast('info', 'Nothing to stop', `${name} was not running.`)
-      }
-    }
-    await inspectLibrary()
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'The session could not be stopped.'
-    addLog('error', message, session.gameId)
-    pushToast('error', 'Could not stop session', message)
-  } finally {
-    state.busyKey = ''
-  }
+      key: session.key,
+      name: game?.name || session.gameName || 'Game',
+    },
+    'session',
+  )
 }
 
 export async function stopAllSessions() {
@@ -864,7 +816,7 @@ export async function refreshGames(manual = true) {
   }
 }
 
-export async function refreshDiscordStatus() {
+async function refreshDiscordStatus() {
   try {
     const status = await window.questline.getDiscordStatus()
     state.discordOnline = status.online
@@ -960,11 +912,4 @@ export async function disconnectRpc() {
   } finally {
     state.rpcBusy = false
   }
-}
-
-export function platformGamesCount(): number {
-  const platform = currentPlatform()
-  return state.games.filter((game) =>
-    game.executables.some((executable) => executable.os === platform),
-  ).length
 }

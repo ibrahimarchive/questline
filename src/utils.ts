@@ -1,7 +1,23 @@
 import type { Game, GameExecutable } from './types'
 
+// Intl formatters are relatively expensive to construct, and these helpers are
+// called from frequently re-rendered templates.
+const numberFormatter = new Intl.NumberFormat('en-US')
+const shortDateFormatter = new Intl.DateTimeFormat(undefined, {
+  month: 'short',
+  day: 'numeric',
+})
+const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
+  month: 'short',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+})
+
+let detectedPlatform: string | null = null
+
 export function formatNumber(value: number): string {
-  return new Intl.NumberFormat('en-US').format(value)
+  return numberFormatter.format(value)
 }
 
 export function formatDuration(milliseconds: number, style: 'clock' | 'short' = 'clock'): string {
@@ -42,17 +58,12 @@ export function formatRelativeTime(value: string | number | Date): string {
   if (hours < 24) return `${hours}h ago`
   const days = Math.round(hours / 24)
   if (days < 7) return `${days}d ago`
-  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  return shortDateFormatter.format(date)
 }
 
 export function formatDateTime(value: string | number | Date): string {
   const date = value instanceof Date ? value : new Date(value)
-  return date.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  })
+  return dateTimeFormatter.format(date)
 }
 
 export function gameIconUrl(game: Game, size = 128): string | null {
@@ -97,9 +108,11 @@ export function executableLabel(name: string): string {
 }
 
 export function currentPlatform(): string {
-  if (navigator.userAgent.includes('Mac')) return 'darwin'
-  if (navigator.userAgent.includes('Linux')) return 'linux'
-  return 'win32'
+  if (detectedPlatform) return detectedPlatform
+  if (navigator.userAgent.includes('Mac')) detectedPlatform = 'darwin'
+  else if (navigator.userAgent.includes('Linux')) detectedPlatform = 'linux'
+  else detectedPlatform = 'win32'
+  return detectedPlatform
 }
 
 export function isUsableExecutable(executable: GameExecutable): boolean {
@@ -120,11 +133,14 @@ export function isExecutableForCurrentPlatform(executable: GameExecutable): bool
   return executable.os === currentPlatform()
 }
 
-export function preferredExecutable(game: Game): GameExecutable | null {
-  const platform = currentPlatform()
-  const usable = game.executables.filter(
+export function availableExecutables(game: Game): GameExecutable[] {
+  return game.executables.filter(
     (entry) => isUsableExecutable(entry) && isExecutableForCurrentPlatform(entry),
   )
+}
+
+export function preferredExecutable(game: Game): GameExecutable | null {
+  const usable = availableExecutables(game)
   return usable.find((entry) => !entry.is_launcher) || usable[0] || null
 }
 

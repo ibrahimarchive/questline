@@ -238,10 +238,6 @@ export class RunnerService {
     this.gamesDirectory = path.resolve(directory)
   }
 
-  setRunnerPath(runnerPath) {
-    this.runnerPath = runnerPath
-  }
-
   sessionKey(gameId, executableName) {
     return `${gameId}::${canonicalExecutableName(executableName)}`
   }
@@ -268,11 +264,6 @@ export class RunnerService {
 
   async ensureRoot() {
     await fs.mkdir(this.gamesDirectory, { recursive: true })
-  }
-
-  async inspect(gameId, executables) {
-    const result = await this.inspectMany([{ gameId, executables }])
-    return result[gameId] || {}
   }
 
   async inspectMany(games) {

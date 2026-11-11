@@ -43,7 +43,7 @@ class DiscordRpcClient {
   async connect(appId) {
     await this.disconnect(false)
 
-    const errors = []
+    let lastError = null
 
     for (const pipe of pipeCandidates()) {
       try {
@@ -54,13 +54,14 @@ class DiscordRpcClient {
         this.ready = true
         return
       } catch (error) {
-        errors.push(error.message)
+        lastError = error
         this.destroySocket()
       }
     }
 
     throw new Error(
       'Could not reach Discord. Make sure the Discord desktop app is running and try again.',
+      lastError ? { cause: lastError } : undefined,
     )
   }
 
@@ -72,32 +73,35 @@ class DiscordRpcClient {
         reject(new Error('Discord IPC connection timed out.'))
       }, 1500)
 
+      const onError = (error) => {
+        clearTimeout(timer)
+        reject(error)
+      }
+
+      socket.once('error', onError)
       socket.once('connect', () => {
         clearTimeout(timer)
+        socket.off('error', onError)
         this.socket = socket
         this.buffer = Buffer.alloc(0)
         this.attachSocket(socket)
         resolve()
-      })
-
-      socket.once('error', (error) => {
-        clearTimeout(timer)
-        reject(error)
       })
     })
   }
 
   attachSocket(socket) {
     socket.on('data', (chunk) => this.onData(chunk))
-    socket.on('error', () => {
+    socket.on('error', (error) => {
       this.ready = false
+      this.failHandshake(error)
     })
     socket.on('close', () => {
       this.ready = false
-      for (const request of this.pending.values()) {
-        request.reject(new Error('The Discord IPC connection closed.'))
-      }
-      this.pending.clear()
+      if (this.socket === socket) this.socket = null
+      this.buffer = Buffer.alloc(0)
+      this.failHandshake(new Error('The Discord IPC connection closed.'))
+      this.rejectPending(new Error('The Discord IPC connection closed.'))
     })
   }
 
@@ -110,8 +114,31 @@ class DiscordRpcClient {
       this.handshakeWaiter = { resolve, reject, timer }
     })
 
-    this.write(OP_HANDSHAKE, { v: 1, client_id: String(appId) })
-    await response
+    try {
+      this.write(OP_HANDSHAKE, { v: 1, client_id: String(appId) })
+      await response
+    } finally {
+      if (this.handshakeWaiter) {
+        clearTimeout(this.handshakeWaiter.timer)
+        this.handshakeWaiter = null
+      }
+    }
+  }
+
+  failHandshake(error) {
+    const waiter = this.handshakeWaiter
+    if (!waiter) return
+    this.handshakeWaiter = null
+    clearTimeout(waiter.timer)
+    waiter.reject(error)
+  }
+
+  rejectPending(error) {
+    for (const request of this.pending.values()) {
+      clearTimeout(request.timer)
+      request.reject(error)
+    }
+    this.pending.clear()
   }
 
   onData(chunk) {
@@ -139,16 +166,17 @@ class DiscordRpcClient {
 
       if (opcode === OP_CLOSE) {
         this.ready = false
-        this.destroySocket()
+        this.destroySocket(new Error('Discord closed the IPC connection.'))
         continue
       }
 
       if (opcode !== OP_FRAME || !message) continue
 
       if (message.evt === 'READY' && this.handshakeWaiter) {
-        clearTimeout(this.handshakeWaiter.timer)
-        this.handshakeWaiter.resolve()
+        const waiter = this.handshakeWaiter
         this.handshakeWaiter = null
+        clearTimeout(waiter.timer)
+        waiter.resolve()
         continue
       }
 
@@ -187,7 +215,13 @@ class DiscordRpcClient {
       }, 8000)
 
       this.pending.set(nonce, { resolve, reject, timer })
-      this.write(OP_FRAME, { cmd: command, args, nonce })
+      try {
+        this.write(OP_FRAME, { cmd: command, args, nonce })
+      } catch (error) {
+        clearTimeout(timer)
+        this.pending.delete(nonce)
+        reject(error)
+      }
     })
   }
 
@@ -217,25 +251,15 @@ class DiscordRpcClient {
       await this.clearActivity()
     }
 
-    if (this.handshakeWaiter) {
-      clearTimeout(this.handshakeWaiter.timer)
-      this.handshakeWaiter.reject(new Error('Disconnected.'))
-      this.handshakeWaiter = null
-    }
-
-    for (const request of this.pending.values()) {
-      clearTimeout(request.timer)
-      request.reject(new Error('Disconnected.'))
-    }
-    this.pending.clear()
-
-    this.destroySocket()
+    this.destroySocket(new Error('Disconnected.'))
     this.ready = false
     this.appId = null
     this.since = null
   }
 
-  destroySocket() {
+  destroySocket(error = new Error('The Discord IPC connection closed.')) {
+    this.failHandshake(error)
+    this.rejectPending(error)
     if (this.socket) {
       this.socket.removeAllListeners()
       this.socket.destroy()
