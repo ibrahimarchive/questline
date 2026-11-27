@@ -67,14 +67,9 @@ export interface Session {
 
 export interface AppInfo {
   version: string
-  name: string
   platform: string
-  isPackaged: boolean
   userData: string
-  gamesDirectory: string
   runnerPath: string
-  bundledGamesPath: string
-  dataPath: string
 }
 
 export interface RpcStatus {
@@ -96,16 +91,12 @@ export interface Toast {
   message?: string
 }
 
-export interface QuestlineApi {
+interface QuestlineApi {
   getState: () => Promise<StoredState>
   saveState: (state: StoredState) => Promise<StoredState>
   getAppInfo: () => Promise<AppInfo>
   loadGames: () => Promise<GameData>
   refreshGames: () => Promise<GameData>
-  inspectGame: (payload: {
-    gameId: string
-    executables: GameExecutable[]
-  }) => Promise<Record<string, InspectEntry>>
   inspectGames: (payload: {
     games: Array<{ gameId: string; executables: GameExecutable[] }>
   }) => Promise<InspectMap>
@@ -128,7 +119,6 @@ export interface QuestlineApi {
   revealPath: (target: string) => Promise<{ revealed: boolean }>
   pickFolder: () => Promise<string | null>
   getDiscordStatus: () => Promise<{ online: boolean; checkedAt: number }>
-  rpcStatus: () => Promise<RpcStatus>
   rpcConnect: (payload: { appId: string; name: string }) => Promise<RpcStatus>
   rpcDisconnect: () => Promise<RpcStatus>
   onRunnerEvent: (callback: (event: RunnerEvent) => void) => () => void

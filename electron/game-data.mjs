@@ -1,7 +1,8 @@
-import fs from 'node:fs/promises'
 import { existsSync } from 'node:fs'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 
-export const DATA_SOURCES = {
+const DATA_SOURCES = {
   DISCORD: 'Discord API',
   BUNDLED: 'Bundled snapshot',
   CACHE: 'Cached snapshot',
@@ -9,7 +10,7 @@ export const DATA_SOURCES = {
 
 const DISCORD_URL = 'https://discord.com/api/applications/detectable'
 
-export function normalizeGameList(input) {
+function normalizeGameList(input) {
   if (!Array.isArray(input)) return []
 
   return input
@@ -44,7 +45,7 @@ export function normalizeGameList(input) {
     .filter((game) => game.executables.length > 0)
 }
 
-export function isValidGameList(input) {
+function isValidGameList(input) {
   if (!Array.isArray(input) || input.length <= 1000) return false
 
   const ids = new Set()
@@ -115,40 +116,38 @@ export async function loadGameData({ bundledPath, cachePath }) {
   }
 }
 
-export async function refreshGameData({ cachePath, onProgress = () => {} }) {
-  const attempts = [{ url: DISCORD_URL, source: DATA_SOURCES.DISCORD }]
+export async function refreshGameData({ cachePath }) {
+  try {
+    const raw = await fetchJson(DISCORD_URL)
+    if (!isValidGameList(raw)) {
+      throw new Error('The response did not look like a Discord game list.')
+    }
 
-  const errors = []
+    const games = normalizeGameList(raw)
+    const payload = {
+      version: 2,
+      source: DATA_SOURCES.DISCORD,
+      updatedAt: new Date().toISOString(),
+      games,
+    }
 
-  for (const attempt of attempts) {
+    await fs.mkdir(path.dirname(cachePath), { recursive: true })
+    const temporary = `${cachePath}.${process.pid}.${Date.now()}.tmp`
     try {
-      onProgress(`Contacting ${attempt.source}...`)
-      const raw = await fetchJson(attempt.url)
-      if (!isValidGameList(raw)) {
-        throw new Error('The response did not look like a Discord game list.')
-      }
-      const games = normalizeGameList(raw)
-      const payload = {
-        version: 2,
-        source: attempt.source,
-        updatedAt: new Date().toISOString(),
-        games,
-      }
-      await fs.mkdir(cachePath.replace(/[\\/][^\\/]+$/, ''), { recursive: true })
-      const temporary = `${cachePath}.${process.pid}.${Date.now()}.tmp`
       await fs.writeFile(temporary, JSON.stringify(payload))
       await fs.rename(temporary, cachePath)
-      onProgress(`${games.length.toLocaleString()} games synced.`)
-      return {
-        games,
-        source: payload.source,
-        updatedAt: payload.updatedAt,
-        cached: false,
-      }
-    } catch (error) {
-      errors.push(`${attempt.source}: ${error.message}`)
+    } finally {
+      await fs.rm(temporary, { force: true }).catch(() => undefined)
     }
-  }
 
-  throw new Error(`Could not refresh the game list. ${errors.join(' | ')}`)
+    return {
+      games,
+      source: payload.source,
+      updatedAt: payload.updatedAt,
+      cached: false,
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`Could not refresh the game list. ${message}`)
+  }
 }

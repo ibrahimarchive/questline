@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import GameArt from './GameArt.vue'
 import Icon from './Icon.vue'
 import {
+  SEARCH_RESULT_LIMIT,
   addToLibrary,
   closeSearch,
   flushSearch,
@@ -31,7 +32,7 @@ const resultLabel = computed(() => {
   if (!state.query.trim()) return ''
   if (state.searchBusy) return 'Searching...'
   if (!results.value.length) return 'No matches'
-  return `${results.value.length}${results.value.length === 24 ? '+' : ''} matches`
+  return `${results.value.length}${results.value.length === SEARCH_RESULT_LIMIT ? '+' : ''} matches`
 })
 
 function handleFocus() {

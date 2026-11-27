@@ -8,7 +8,6 @@ import {
   shell,
 } from 'electron'
 import { execFile } from 'node:child_process'
-import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -357,14 +356,9 @@ function setupIpc() {
 
   register('app:info', async () => ({
     version: app.getVersion(),
-    name: app.getName(),
     platform: process.platform,
-    isPackaged: app.isPackaged,
     userData: app.getPath('userData'),
-    gamesDirectory: state.settings.gamesDirectory,
     runnerPath: runnerTemplatePath(),
-    bundledGamesPath: bundledGamesPath(),
-    dataPath: gamesCachePath(),
   }))
 
   register('games:load', async () =>
@@ -374,11 +368,6 @@ function setupIpc() {
   register('games:refresh', async () =>
     refreshGameData({ cachePath: gamesCachePath() }),
   )
-
-  register('runner:inspect', async (payload) => {
-    if (!payload || typeof payload !== 'object') throw new Error('Missing game data.')
-    return runnerService.inspect(payload.gameId, payload.executables)
-  })
 
   register('runner:inspect-many', async (payload) => {
     if (!payload || !Array.isArray(payload.games)) throw new Error('Missing game data.')
@@ -462,8 +451,6 @@ function setupIpc() {
     discordStatusCache = { online, checkedAt: Date.now() }
     return discordStatusCache
   })
-
-  register('rpc:status', async () => discordRpc.status())
 
   register('rpc:connect', async (payload) => {
     const appId = String(payload?.appId || '')
